@@ -1,0 +1,6 @@
+{
+  "name": "BoothBuilder 3D Pro",
+  "description": "Professional 3D booth configurator with modular segments, custom library, and real-time environment lighting. Features persistent projects using IndexedDB.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
