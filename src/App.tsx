@@ -56,7 +56,9 @@ import {
   Lock,
   Unlock,
   Pipette,
-  LayoutGrid
+  LayoutGrid,
+  FileDown,
+  FileUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -1200,6 +1202,119 @@ export default function App() {
   };
 
   const viewpointsUploadRef = useRef<HTMLInputElement>(null);
+  const projectImportRef = useRef<HTMLInputElement>(null);
+
+  const exportProjectToPortable = async (projectId: string) => {
+    try {
+      const proj = projects.find(p => p.id === projectId);
+      if (!proj) return;
+
+      const savedRaw = localStorage.getItem(`booth-project-data-${projectId}`);
+      if (!savedRaw) return;
+
+      const state = JSON.parse(savedRaw);
+      
+      // Collect all Assets
+      const assets: Record<string, { blob: string, name: string, type: string }> = {};
+      
+      // Check structural modules
+      const structuralIds = state.selectedBoothStockIds || [];
+      for (const id of structuralIds) {
+        const blob = await getAsset(id);
+        if (blob) {
+          const reader = new FileReader();
+          const base64 = await new Promise<string>((resolve) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          const stock = (state.baseStocks || []).find((s: any) => s.id === id);
+          assets[id] = { blob: base64, name: stock?.name || 'asset', type: 'model' };
+        }
+      }
+
+      // Check furniture
+      const items = state.furniture || [];
+      for (const item of items) {
+        const blob = await getAsset(item.id);
+        if (blob) {
+          const reader = new FileReader();
+          const base64 = await new Promise<string>((resolve) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          assets[item.id] = { blob: base64, name: item.type, type: item.type === 'Plane' ? 'image' : 'model' };
+        }
+      }
+
+      const packageData = {
+        version: '1.0',
+        project: proj,
+        state: state,
+        assets: assets
+      };
+
+      const dataStr = JSON.stringify(packageData);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${proj.name.replace(/\s+/g, '_')}_backup.booth`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error("Export failed:", error);
+      alert("Failed to export project package.");
+    }
+  };
+
+  const handleImportProjectPackage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        const data = JSON.parse(content);
+        
+        if (!data.project || !data.state || !data.assets) {
+          throw new Error("Invalid project file format");
+        }
+
+        // New ID to avoid collision
+        const newId = `project-${Date.now()}`;
+        const newProject = { 
+          ...data.project, 
+          id: newId, 
+          updatedAt: Date.now(),
+          name: `${data.project.name} (Imported)`
+        };
+
+        // Restore Assets to IndexedDB
+        for (const [assetId, assetData] of Object.entries(data.assets) as any) {
+          const res = await fetch(assetData.blob);
+          const blob = await res.blob();
+          await saveAsset(assetId, blob);
+        }
+
+        // Save State
+        localStorage.setItem(`booth-project-data-${newId}`, JSON.stringify(data.state));
+        
+        // Update Project List
+        const newList = [...projects, newProject];
+        setProjects(newList);
+        localStorage.setItem(PROJECTS_LIST_KEY, JSON.stringify(newList));
+        
+        alert("Project imported successfully!");
+      } catch (error) {
+        console.error("Import failed:", error);
+        alert("Failed to import project file.");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleImportViewpoints = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -3494,7 +3609,24 @@ export default function App() {
               <div className={`flex-1 flex flex-col rounded-xl p-6 border ${theme === 'dark' ? 'bg-black/20 border-white/5' : 'bg-slate-50 border-slate-200 shadow-inner'}`}>
                 <div className="flex items-center justify-between mb-6">
                   <h3 className={`text-xs font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Recent Projects</h3>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 font-bold">{projects.length} Saved</span>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => projectImportRef.current?.click()}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-black uppercase transition-all ${theme === 'dark' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100'}`}
+                      title="Import Project File (.booth)"
+                    >
+                      <FileUp size={12} />
+                      Import
+                    </button>
+                    <input 
+                      type="file"
+                      ref={projectImportRef}
+                      onChange={handleImportProjectPackage}
+                      accept=".booth"
+                      className="hidden"
+                    />
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-500 font-bold">{projects.length} Saved</span>
+                  </div>
                 </div>
 
                 {projects.length === 0 ? (
@@ -3583,6 +3715,13 @@ export default function App() {
                               </motion.div>
                             ) : (
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                 <button 
+                                   onClick={() => exportProjectToPortable(proj.id)}
+                                   className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all active:scale-90"
+                                   title="Export Project Backup (.booth)"
+                                 >
+                                   <FileDown size={16} />
+                                 </button>
                                  <button 
                                    onClick={() => {
                                       setEditingProjectId(proj.id);
